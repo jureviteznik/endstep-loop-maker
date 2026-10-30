@@ -1,0 +1,9 @@
+{
+  "name": "endstep-loop-maker",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Chrome/Opera extension that recognizes and executes combo loops on endstep.cc",
+  "scripts": {
+    "test": "node --test tests/replay.test.js"
+  }
+}

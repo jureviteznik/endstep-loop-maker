@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "Endstep Loop Maker",
+  "version": "0.2.0",
+  "description": "Recognizes and executes combo loops on endstep.cc.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://endstep.cc/*",
+    "https://*.endstep.cc/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/ui/sidepanel.html"
+  },
+  "action": {
+    "default_title": "Endstep Loop Maker",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://endstep.cc/*",
+        "https://*.endstep.cc/*"
+      ],
+      "js": [
+        "src/inject/ws-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://endstep.cc/*",
+        "https://*.endstep.cc/*"
+      ],
+      "js": [
+        "src/game/tracker.js",
+        "src/combos/builtin.js",
+        "src/combos/matcher.js",
+        "src/combos/executor.js",
+        "src/content/bridge.js",
+        "src/content/controller.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "sidebar_action": {
+    "default_panel": "src/ui/sidepanel.html",
+    "default_title": "Endstep Loop Maker",
+    "default_icon": "icons/icon32.png"
+  }
+}
