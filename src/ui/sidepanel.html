@@ -21,6 +21,7 @@
     <h2>Combos</h2>
     <label class="row" title="Off: every loop is played by hand. On: loops are handed to endstep's macro; if it stalls, it's stopped, the board is fixed and the macro re-recorded (after 2 failures in a row the rest is played by hand)."><input type="checkbox" id="use-macro" checked> Use endstep macros for repeats (fewer messages)</label>
     <p class="hint">Tip: set "Always yes" on optional triggers like Golem Foundry's in the game. It makes the loop shorter.</p>
+    <p id="macro-warning" class="hint warn" hidden>endstep stopped reporting macro state, so loops are played by hand. Reloading the game tab brings the macros back. <button id="reload-tab" class="small">Reload game tab</button></p>
     <ul id="combos" class="combos"></ul>
     <p id="executor-info" class="hint"></p>
   </section>

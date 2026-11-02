@@ -8,7 +8,8 @@
 //     match    optional regex source tested against the prompt message
 //     do       GAME_ACTION type to send (PLAY_CARD, CHOOSE_CARDS, CHOOSE_TARGETS, AUTO_PAY, YES, NO, ...)
 //     card     {name, zone} picked from the prompt's cardOptions *by name*, never by a recorded id
-//     ability  regex source picked from the prompt's modeOptions (CHOOSE_ABILITY)
+//     ability  regex source picked from the prompt's modeOptions (CHOOSE_ABILITY), or for PLAY_CARD
+//              from the card's playableAbilities (sent as abilityIndex, no extra prompt)
 //     optional skip the step if the current prompt doesn't match it. Use it for choices the
 //              engine makes by itself when there's only one candidate (e.g. a single creature to sacrifice).
 //   When several options match a card selector, the card the loop chose most recently wins
@@ -131,7 +132,7 @@
       ],
       loop: [
         { do: 'REPEAT', label: 'Making Golems', until: { count: { name: 'Golem', zone: 'battlefield', atLeast: 9 } }, steps: makeGolem, max: 30 },
-        { prompt: 'PRIORITY', do: 'PLAY_CARD', card: { name: "Giant's Boulder", zone: 'Battlefield' } },
+        { prompt: 'PRIORITY', do: 'PLAY_CARD', card: { name: "Giant's Boulder", zone: 'Battlefield' }, ability: 'Destroy' },
         {
           do: 'RESOLVE',
           answers: [

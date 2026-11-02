@@ -47,6 +47,7 @@
       player: me ? me.name : null,
       prompt: p ? { type: p.type, message: (p.message || '').split('\n')[0], version: p.promptVersion } : null,
       macro: macro ? { state: macro.state, lastStop: macro.lastStop || null } : null,
+      macroReported: tracker.macroReported,
       combos: combos.map((c) => ELM.comboStatus(c, tracker)),
       executor: { ...executor.status },
     };

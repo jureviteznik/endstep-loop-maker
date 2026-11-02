@@ -320,3 +320,100 @@ test('a macro run that only reports its result is counted, not discarded', async
   const executor = new ELM.ComboExecutor(tracker, async () => ({ ok: true }), () => {}, sendMacro);
   assert.equal(await executor.runMacro(4), 3);
 });
+
+// Capture 2026-10-30T23-09-48: the site's UI activates the Boulder with
+// PLAY_CARD {cardId: 46, abilityIndex: 1} straight from playableAbilities, no CHOOSE_ABILITY.
+test('the Boulder is activated with its destroy ability index in one message', () => {
+  const tracker = new ELM.GameTracker();
+  const executor = new ELM.ComboExecutor(tracker, async () => ({ ok: true }), () => {});
+  const step = boulder().loop.find((s) => s.do === 'PLAY_CARD' && s.ability);
+  const prompt = {
+    type: 'PRIORITY',
+    cardOptions: [
+      card(46, "Giant's Boulder", 'Battlefield', {
+        playableAbilities: [
+          { index: 0, description: '{1}, {T}: Add one mana of any color.' },
+          { index: 1, description: '{7}, {T}, Sacrifice this artifact: Destroy target permanent.' },
+        ],
+      }),
+    ],
+  };
+  assert.deepEqual(executor.fields(step, prompt), { cardId: 46, abilityIndex: 1, autoPassAfter: false });
+});
+
+// Third game (forge-w6): after the page's routine REFRESH the server stopped sending `macro` in
+// GAME_STATE, so RECORD_START was never confirmed. The runner then played by hand while the
+// server was still recording, and the macro ended up with 80 steps.
+const FIXTURE_NO_MACRO_STATE = path.join(__dirname, '..', 'fixtures', 'endstep-capture-2026-10-31T19-43-12-246Z.json');
+
+function replayToFirstExtAction() {
+  const replay = makeReplay(FIXTURE_NO_MACRO_STATE);
+  replay.feedUntil((r) => r.dir === 'out-ext' && isPlayerAction(r));
+  return replay;
+}
+
+test('without macro reports, loops are played by hand and no recording is started', { skip: !fs.existsSync(FIXTURE_NO_MACRO_STATE) }, async () => {
+  const replay = replayToFirstExtAction();
+  assert.equal(replay.tracker.macroReported, false);
+  const engine = fakeEngine(replay, { isSend: isPlayerAction });
+  const macros = [];
+  const executor = new ELM.ComboExecutor(replay.tracker, engine.sendAction, () => {}, async (a) => (macros.push(a), { ok: true }));
+  await executor.run(combo(), 2, { useMacro: true });
+
+  assert.deepEqual(macros, []);
+  assert.equal(executor.status.message, "Done: 2 iteration(s) (endstep wasn't reporting macro state, so 2 played by hand).");
+});
+
+test('an unconfirmed recording is stopped and discarded before anything is played by hand', { skip: !fs.existsSync(FIXTURE_NO_MACRO_STATE) }, async () => {
+  const replay = replayToFirstExtAction();
+  replay.tracker.macroReported = true; // as if the last state still had it; RECORDING never comes
+  const engine = fakeEngine(replay, { isSend: isPlayerAction });
+  const log = [];
+  const sendAction = async (type, fields) => (log.push(type), engine.sendAction(type, fields));
+  const sendMacro = async (action) => (log.push(action), { ok: true });
+  const executor = new ELM.ComboExecutor(replay.tracker, sendAction, () => {}, sendMacro);
+  executor.macroProbeMs = 20;
+  executor.macroStallMs = 50;
+  await executor.run(combo(), 2, { useMacro: true });
+
+  const firstOther = log.findIndex((e) => e !== 'RECORD_START');
+  assert.ok(firstOther > 1, 'probes with RECORD_START again');
+  assert.deepEqual(log.slice(firstOther, firstOther + 2), ['RECORD_STOP', 'DISCARD']);
+  let recording = false;
+  for (const entry of log) {
+    if (entry === 'RECORD_START') recording = true;
+    if (entry === 'RECORD_STOP') recording = false;
+    assert.ok(!(recording && entry === 'PLAY_CARD'), `played by hand while recording: ${log.join(' ')}`);
+  }
+  assert.match(executor.status.message, /^Done: 2 iteration\(s\)/);
+});
+
+// Fourth game (forge-w5): the server dropped a RECORD_START and never showed RECORDING within 3s.
+const FIXTURE_SLOW_RECORD = path.join(__dirname, '..', 'fixtures', 'endstep-capture-2026-10-31T20-08-51-266Z.json');
+
+test('an unanswered RECORD_START is probed; "already recording" confirms it', { skip: !fs.existsSync(FIXTURE_SLOW_RECORD) }, async () => {
+  const replay = makeReplay(FIXTURE_SLOW_RECORD);
+  replay.feedUntil((r) => r.dir === 'out-ext' && isPlayerAction(r));
+  assert.equal(replay.tracker.macroReported, true);
+  const engine = fakeEngine(replay, { isSend: isPlayerAction });
+  const log = [];
+  const serverFrame = (msg) => replay.tracker.ingest({ kind: 'ws', dir: 'in', enc: 'text', data: JSON.stringify(msg) });
+  const sendMacro = async (action) => {
+    log.push(action);
+    const starts = log.filter((e) => e === 'RECORD_START').length;
+    // The first RECORD_START gets no answer at all; the second one finds it recording.
+    if (action === 'RECORD_START' && starts === 2) setTimeout(() => serverFrame({ type: 'ERROR', payload: 'You are already recording.' }));
+    if (action === 'RECORD_STOP') setTimeout(() => setMacroState(replay.tracker, 'ARMED'));
+    return { ok: true };
+  };
+  const sendAction = async (type, fields) => (log.push(type), engine.sendAction(type, fields));
+  const executor = new ELM.ComboExecutor(replay.tracker, sendAction, () => {}, sendMacro);
+  executor.macroProbeMs = 20;
+  executor.macroStallMs = 50; // the fake server never answers the RUN that follows
+  await executor.run(combo(), 2, { useMacro: true });
+
+  const recorded = log.slice(0, log.indexOf('RECORD_STOP') + 1);
+  assert.deepEqual(recorded.slice(0, 3), ['RECORD_START', 'RECORD_START', 'PLAY_CARD']);
+  assert.equal(recorded.length - 3, 18, 'one full loop played into the recording, then RECORD_STOP');
+  assert.equal(log[recorded.length], 'RUN');
+});

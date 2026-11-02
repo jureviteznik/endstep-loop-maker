@@ -14,6 +14,8 @@
 // The macro is only a shortcut: if it stalls or makes no progress, it's stopped and discarded,
 // the board is brought back to the start (combo.recover), and the next loop records it afresh.
 // After MAX_MACRO_FAILURES failures in a row the rest of the run is played by hand.
+// Loops are also played by hand while the server isn't reporting macro state (tracker.macroReported):
+// without it a recording can't be confirmed or a run counted.
 (() => {
   const ELM = (globalThis.ELM = globalThis.ELM || {});
 
@@ -21,7 +23,14 @@
   // A macro run may send nothing until it ends: healthy runs took up to 3.5s (the server caps one
   // RUN at about 3 loops); one that hung on a choice sent nothing at all.
   const MACRO_STALL_MS = 10000;
-  const SETTLE_MS = 60; // lets a trailing GAME_STATE land after a prompt delta
+  // RECORDING shows up anywhere from 40ms to 6s after RECORD_START, and the server sometimes drops
+  // a RECORD_START altogether. Its ERROR replies come back within ~50ms, so if RECORDING hasn't
+  // shown up after MACRO_PROBE_MS, RECORD_START is sent again: "You are already recording." confirms
+  // it, silence means this one started it (the next probe confirms that).
+  const MACRO_PROBE_MS = 1000;
+  // After a prompt that came in a delta, a GAME_STATE with the zone changes may follow (median
+  // 51ms). Prompts in a full GAME_STATE (about 85% of them) need no wait.
+  const SETTLE_MS = 60;
   const MAX_RESOLVE_ACTIONS = 60;
   const MAX_ITERATIONS = 1000;
   const MAX_CYCLE = 4; // give up recording if the pieces don't return to their ids by then
@@ -48,6 +57,8 @@
       this.combo = null; // the combo being run
       this.options = { pickTargets: false };
       this.macroStallMs = MACRO_STALL_MS;
+      this.macroProbeMs = MACRO_PROBE_MS;
+      this.recording = false; // we sent RECORD_START and haven't stopped or discarded it
       this.status = { running: false, comboId: null, iteration: 0, iterations: 0, step: null, message: '' };
       tracker.onChange(() => {
         for (const w of [...this.waiters]) w.check();
@@ -131,7 +142,7 @@
       const res = await this.sendAction(type, { ...fields, promptVersion: pv });
       if (!res || !res.ok) throw new Error(`Could not send ${type}: ${(res && res.error) || 'unknown error'}`);
       await this.waitForPrompt((p) => p.promptVersion > pv, `the engine to answer ${type}`);
-      await sleep(SETTLE_MS);
+      if (this.tracker.promptViaDelta) await sleep(SETTLE_MS);
     }
 
     async macroCommand(action, count) {
@@ -159,9 +170,11 @@
       let manualFailures = 0; // in a row
       let byMacro = 0;
       let recoveries = 0;
+      let unreported = 0; // loops played by hand because the server wasn't reporting macro state
       const split = () => {
         const parts = [];
         if (byMacro) parts.push(`${byMacro} by macro, ${this.status.iteration - byMacro} by hand`);
+        if (unreported) parts.push(`endstep wasn't reporting macro state, so ${unreported} played by hand`);
         if (recoveries) parts.push(`recovered ${recoveries}×`);
         return parts.length ? ` (${parts.join('; ')})` : '';
       };
@@ -171,7 +184,8 @@
           const sig = this.requireSignature(combo);
           await this.waitForPrompt((p) => p.type === 'PRIORITY', 'priority');
           const left = total - this.status.iteration;
-          const macroOn = macroOk && macroFailures < MAX_MACRO_FAILURES;
+          const macroOn = macroOk && macroFailures < MAX_MACRO_FAILURES && this.tracker.macroReported;
+          if (macroOk && macroFailures < MAX_MACRO_FAILURES && !macroOn) unreported++;
           const armed = macroOn ? this.armedFor(combo) : null;
           let viaMacro = false;
           try {
@@ -210,7 +224,10 @@
         }
         this.update({ message: `Done: ${this.status.iteration} iteration(s)${split()}.` });
       } catch (err) {
-        if (this.sendMacro && this.macro() && this.macro().state === 'RECORDING') this.sendMacro('DISCARD');
+        if (this.sendMacro && (this.recording || (this.macro() && this.macro().state === 'RECORDING'))) {
+          this.recording = false;
+          this.sendMacro('RECORD_STOP').then(() => this.sendMacro('DISCARD'));
+        }
         this.update({ message: `Stopped after ${this.status.iteration} iteration(s)${split()}: ${err.message}` });
       } finally {
         this.update({ running: false, step: null });
@@ -227,8 +244,20 @@
     // Stops and discards whatever macro is on the server; best effort.
     async dropMacro() {
       this.armed = null;
+      if (!this.sendMacro) return;
       const m = this.macro();
-      if (!this.sendMacro || !m) return;
+      if (this.recording || (m && m.state === 'RECORDING')) {
+        // Never play on by hand while the server may still be recording: it would all end up in
+        // the macro. The server may not report RECORDING at all, so stop it regardless.
+        this.recording = false;
+        await this.sendMacro('RECORD_STOP');
+        await this.sendMacro('DISCARD');
+        if (this.tracker.macroReported) {
+          await this.waitForMacro((x) => x.state === 'IDLE', 'the macro to be discarded', { timeout: this.macroStallMs }).catch(() => {});
+        }
+        return;
+      }
+      if (!m) return;
       if (m.state === 'RUNNING') {
         await this.sendMacro('STOP');
         await this.waitForMacro((x) => x.state !== 'RUNNING', 'the macro to stop', { timeout: this.macroStallMs }).catch(() => {});
@@ -280,8 +309,7 @@
         await this.macroCommand('DISCARD');
         await this.waitForMacro((x) => x.state === 'IDLE', 'the old macro to be discarded');
       }
-      await this.macroCommand('RECORD_START');
-      await this.waitForMacro((x) => x.state === 'RECORDING', 'macro recording to start');
+      await this.startRecording();
       let cycle = 0;
       while (cycle < Math.min(MAX_CYCLE, left)) {
         this.update({ message: `Recording macro: iteration ${cycle + 1}` });
@@ -294,9 +322,38 @@
         throw new Error('The recorded loop did not return the pieces to the same cards.');
       }
       await this.macroCommand('RECORD_STOP');
-      await this.waitForMacro((x) => x.state === 'ARMED', 'the macro to arm');
+      await this.waitForMacro((x) => x.state === 'ARMED', 'the macro to arm', { timeout: this.macroStallMs });
+      this.recording = false;
       // perRun: most cycles one RUN has completed so far (the server often stops after one).
       this.armed = { comboId: combo.id, signature: startSig, cycle, perRun: Infinity };
+    }
+
+    // Sends RECORD_START until the server confirms it is recording (see MACRO_PROBE_MS).
+    async startRecording() {
+      this.update({ message: 'Starting the macro recording…' });
+      const deadline = Date.now() + this.macroStallMs;
+      while (Date.now() < deadline) {
+        const errSeq = this.tracker.errorSeq;
+        await this.macroCommand('RECORD_START');
+        this.recording = true;
+        const started = await this.waitFor(
+          () => {
+            const m = this.macro();
+            if (m && m.state === 'RECORDING') return { ok: true };
+            const e = this.tracker.lastError;
+            if (e && e.seq > errSeq) return { ok: /already recording/i.test(e.message), error: e.message };
+            return undefined;
+          },
+          'macro recording to start',
+          { timeout: Math.min(this.macroProbeMs, Math.max(1, deadline - Date.now())) }
+        ).catch((err) => {
+          if (err instanceof StopError) throw err;
+          return null; // no answer yet: probe again
+        });
+        if (started && started.ok) return;
+        if (started) throw new Error(`endstep refused to record the macro: ${started.error}`);
+      }
+      throw new Error('endstep never confirmed the macro recording.');
     }
 
     // Returns how many cycles the server completed. Throws if the macro doesn't finish within
@@ -547,8 +604,13 @@
 
   function buildFields(step, prompt, recent, me) {
     switch (step.do) {
-      case 'PLAY_CARD':
-        return { cardId: pickCard(prompt, step.card, recent, me).id, autoPassAfter: false };
+      case 'PLAY_CARD': {
+        // `ability` picks one of the card's playableAbilities up front, like the site's own UI
+        // does; otherwise a CHOOSE_ABILITY prompt follows.
+        const card = pickCard(prompt, step.card, recent, me);
+        const ability = step.ability && (card.playableAbilities || []).find((a) => new RegExp(step.ability, 'i').test(a.description));
+        return ability ? { cardId: card.id, abilityIndex: ability.index, autoPassAfter: false } : { cardId: card.id, autoPassAfter: false };
+      }
       case 'TAP_MANA':
         return { cardId: pickCard(prompt, step.card, recent, me).id };
       case 'CHOOSE_CARDS':

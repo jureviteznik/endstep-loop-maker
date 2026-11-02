@@ -29,6 +29,9 @@ function toPage(cmd, fields = {}) {
 chrome.storage.local.get({ useMacro: true }).then((v) => {
   $('use-macro').checked = v.useMacro;
 });
+$('reload-tab').addEventListener('click', () => {
+  if (activeTabId != null) chrome.tabs.reload(activeTabId);
+});
 $('use-macro').addEventListener('change', (e) => chrome.storage.local.set({ useMacro: e.target.checked }));
 
 // --- capture toggle ---
@@ -223,9 +226,12 @@ function renderStatus(s) {
     $('prompt-info').textContent = '';
     $('combos').replaceChildren();
     $('executor-info').textContent = '';
+    $('macro-warning').hidden = true;
     return;
   }
   $('game-info').textContent = `Playing as ${s.player || '?'}.`;
+  // Reloading mid-run would kill the run, so only offer it while idle.
+  $('macro-warning').hidden = s.macroReported !== false || !$('use-macro').checked || s.executor.running;
   const macro = s.macro && s.macro.state !== 'IDLE' ? ` · macro ${s.macro.state.toLowerCase()}` : '';
   $('prompt-info').textContent = (s.prompt ? `Prompt: ${s.prompt.type} — ${s.prompt.message}` : 'Waiting on opponent.') + macro;
 

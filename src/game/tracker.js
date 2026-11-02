@@ -3,7 +3,7 @@
 // Protocol notes (from fixtures/endstep-capture-*.json):
 // - Game state arrives on the engine socket (wss://endstep.cc/play/<engine>/ws):
 //     GAME_STATE  full snapshot {matchId, seq, payload:{players, stack, pendingAction, ...}}
-//     GAME_DELTA  {payload:{baseSeq, patch:{state:{<scalar fields>}}, pendingAction}}
+//     GAME_DELTA  {payload:{baseSeq, patch:{state:{<scalar fields>}, players?:[{i, <scalars>}]}, pendingAction}}
 //     GAME_EVENT  log-style events (zone changes, triggers, ...)
 //     ATTACHED    {payload:{audience:"<my player id>"}}
 //   Zone changes always come as a full GAME_STATE; deltas only patch scalars and the prompt.
@@ -19,6 +19,11 @@
       this.myPlayerId = null;
       this.sockets = new Map(); // socket id -> url
       this.listeners = new Set();
+      // Some servers stop sending `macro` in GAME_STATE (seen after the page's REFRESH re-attach),
+      // so a state without it means "unknown", not "no macro".
+      this.macroReported = false;
+      this.lastError = null; // {message, seq} of the latest server ERROR
+      this.errorSeq = 0;
     }
 
     onChange(fn) {
@@ -39,7 +44,7 @@
       if (record.kind !== 'ws' || record.dir !== 'in' || record.enc !== 'text') return;
       // Cheap prefix check so PING/PONG and lobby traffic aren't parsed.
       const head = record.data.slice(0, 40);
-      if (!head.includes('"GAME_') && !head.includes('"ATTACHED"')) return;
+      if (!head.includes('"GAME_') && !head.includes('"ATTACHED"') && !head.includes('"ERROR"')) return;
 
       let msg;
       try {
@@ -47,21 +52,35 @@
       } catch {
         return;
       }
-      if (msg.type === 'ATTACHED') {
+      if (msg.type === 'ERROR') {
+        this.lastError = { message: String(msg.payload), seq: ++this.errorSeq };
+        this.emit();
+      } else if (msg.type === 'ATTACHED') {
         this.myPlayerId = msg.payload.audience;
         this.matchId = msg.payload.matchId;
         this.emit();
       } else if (msg.type === 'GAME_STATE') {
         this.matchId = msg.matchId;
         this.state = msg.payload;
+        this.macroReported = 'macro' in msg.payload;
+        this.promptViaDelta = false;
         this.emit();
       } else if (msg.type === 'GAME_DELTA') {
         if (!this.state) return;
         const { patch, pendingAction } = msg.payload;
         if (patch && patch.state) Object.assign(this.state, patch.state);
-        const other = patch && Object.keys(patch).filter((k) => k !== 'state');
+        // Per-player scalars by index, e.g. {i: 0, manaPool: {colorless: 1}}.
+        for (const { i, ...fields } of (patch && patch.players) || []) {
+          const player = (this.state.players || [])[i];
+          if (player) Object.assign(player, fields);
+        }
+        const other = patch && Object.keys(patch).filter((k) => k !== 'state' && k !== 'players');
         if (other && other.length) console.warn('[endstep-loop-maker] unhandled delta keys', other);
-        if ('pendingAction' in msg.payload) this.state.pendingAction = pendingAction;
+        if ('pendingAction' in msg.payload) {
+          this.state.pendingAction = pendingAction;
+          // Zones only change in full states; one may still be on its way.
+          this.promptViaDelta = true;
+        }
         this.emit();
       }
     }

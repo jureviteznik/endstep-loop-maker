@@ -21,6 +21,8 @@ Untick **Use endstep macros** in the panel to play every loop by hand. With it o
    - records the macro again.
 4. After 2 macro failures in a row, the rest of the run is played by hand.
 
+Some servers stop including the macro state in game updates, e.g. after the page's once-a-minute `REFRESH`. While that lasts, the runner plays every loop by hand. Without macro state it can't confirm that a recording started or count what a run did. The server confirms a recording anywhere from 40 ms to 6 s after `RECORD_START`, and sometimes drops the command. Its error replies come back within ~50 ms, though. So if there's no confirmation after 1 s, the runner sends `RECORD_START` again: "You are already recording." confirms it. If there's still no confirmation after 10 s, the recording is stopped and discarded before anything is played by hand. Otherwise the manual loops would end up in the macro.
+
 The server may run a macro silently and send only the result (`ARMED`, `iterationsDone`), with no `RUNNING` state in between. It also caps one `RUN` at about 3 loops ("it ran for as long as one turn of play should"), so the runner sends `RUN` again.
 
 A step that fails during play by hand also gets one recovery and retry before the run stops.

@@ -33,6 +33,7 @@ h2 { font-size: 13px; margin: 0 0 6px; display: flex; align-items: center; gap: 
 section { border-top: 1px solid var(--border); padding: 10px 0; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0; }
 .hint { color: var(--muted); font-size: 12px; margin: 4px 0; }
+.hint.warn { color: #d9822b; }
 .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .pill.on { color: var(--in); border-color: var(--in); }
 button.small { font-size: 11px; padding: 1px 6px; }
